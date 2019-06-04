@@ -1,0 +1,174 @@
+---
+title: "Activity Rhythm Analysis in Drosophila"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+1. Importing required packages
+```{r}
+#Packages to import, store and manipulate behavioral data
+library(behavr, damr)
+#For Graphical Visualization of behavioral data. Extension of ggplot2. Additionally Pre-processes data.
+library(ggetho) 
+#For behavioral data analysis
+library(sleepr, zeitgebr)
+
+
+```
+
+
+2. Loading dams_sample data available as a part of damr
+```{r}
+getwd()
+data(dams_sample) 
+#Make a copy to manipulate data
+dt <- copy(dams_sample) 
+summary(dt)
+print(head(dt[meta=TRUE]))
+```
+32 individual fies under DD.
+Period_group metavariable can be either a “short”,”long“ or wild-type (“wt”) period
+
+
+3. Marking regime transitions. Example: LD12 -> DD
+    t = 0 now means “ZT0 of the transition day”
+```{r}
+#DT[, baseline_days:= 3, meta=TRUE] #Days
+#dt[, t := t - days(xmv(baseline_days))] #To seconds
+```
+
+
+4. Data Enrichment
+    DAM data only has variables t and activity. Activity is the number of beam crosses over a time bin (e.g. one minute)
+```{r}
+head(dt[, moving := activity > 0])
+# moving is TRUE when and only when activity > 0, and FALSE otherwise
+```
+
+
+5. Exploratory Tile Plot
+    To spot outliers
+    Subjective day: Greys, Subjective Night: Black
+```{r}
+ggetho(dt, aes(z=activity)) +
+      stat_ld_annotations(ld_colours = c("grey", "black"))+
+      stat_tile_etho() 
+```
+
+    
+6. Dealing with dead animals - 5 & 10 
+    Removing data after death based on long bouts of inactivity
+```{r}
+dt_curated <- curate_dead_animals(dt)
+summary(dt_curated)
+```
+
+
+7. Tile plot with outliers removed
+```{r}
+ggetho(dt_curated, aes(z=activity)) +
+      stat_ld_annotations(ld_colours = c("grey", "black"))+
+      stat_tile_etho() #variable of interest as a colour with pixel intensity
+```
+
+
+8. Changing naming conventions to simpler ones
+    Assigning a number for each individual fly
+```{r}
+head(dt_curated[, uid := 1 : .N, meta=T])
+head(dt_curated[, .(id, uid) ,meta=T]) #map uid to id
+```
+
+
+9. Double Plotted Actograms using multiplot = 2
+```{r}
+ggetho(dt_curated, aes(z = moving), multiplot = 2) + 
+    stat_bar_tile_etho() + #bar height to show the amount of movement
+    facet_wrap( ~ period_group + uid, ncol = 8, labeller = label_wrap_gen(multi_line=FALSE)) 
+        #split graph by given uid and period_group
+        #Graph names in a single line
+```
+
+
+10. Periodograms
+  a. Computing the periodicity of the free running clock of multiple individuals
+      Representation of the density (i.e. power) of a signal at different periods (or frequencies). 
+      In addition, a periodogram associates to each pair of power-period a significance level
+```{r}
+per_xsq_dt <- periodogram(activity, 
+                        dt_curated,
+                        FUN = chi_sq_periodogram) #ac_periodogram – An autocorrelation based method
+                                                  #ls_periodogram – Lomb-Scargle algorithm
+head(per_xsq_dt)
+```
+Additional Information on original functions: lomb::lsp; xsp::chiSqPeriodogram; stats::acf 
+
+
+  b.Peaks finding
+      Finds a maximum of three peaks, which are sorted by their power (relative to the significance thershold)
+      Insignificant peaks are left out
+```{r}
+per_xsq_dt <- find_peaks(per_xsq_dt)
+head(per_xsq_dt)
+```
+      Annotates our data by adding a column named "peak". 
+      Whenever the row corresponds to a peak, it puts a number and NA otherwise. 
+  
+      
+  c. Visualisation
+      i. PLot of all periodograms
+```{r}
+ggperio(per_xsq_dt) + geom_line(aes(group = id, colour=period_group))
+```
+  
+  
+    ii. Periodograms of the individual flies
+```{r}
+ggperio(per_xsq_dt) + 
+  geom_line(aes(group = id, colour = period_group)) +
+  geom_peak(col = "black") +
+  geom_line(aes(y = signif_threshold)) +
+  facet_wrap(~ uid, ncol = 8)
+ggperio(per_xsq_dt) + 
+  geom_line(aes(group = id, colour = period_group)) + #Group by uid
+  geom_peak(peak_rank = 1:2, col = "black") +         #show peak values for the I & II most significant peak values
+  geom_line(aes(y = signif_threshold)) +              #Draw line of significance
+  facet_wrap(~ uid, ncol = 8)
+```
+  
+  
+    iii. Population average periodogram
+```{r}
+ggperio(per_xsq_dt, aes(y = power - signif_threshold,
+                  colour=period_group)) + 
+                  stat_pop_etho()
+```
+    
+    
+  d. Extracting Peak Values of 1
+      Significant differences in peak periodicity vs genotype
+```{r}
+summary_dt <- rejoin(per_xsq_dt[peak==1]) #Merge metadata and summary statistics 
+head(summary_dt)
+```
+  
+  
+  e. Distribution of periods
+      Size of the points is proportional to the relative power of the peak discovered
+```{r}
+ggplot(summary_dt, aes(period_group, period, fill= period_group)) + 
+        geom_boxplot(outlier.colour = NA) +
+        geom_jitter(aes(size=power -  signif_threshold), alpha=.5) +
+        scale_y_hours(name = "Period") 
+```
+     
+      
+      f. Ascertaining statistically significant differences in period between each pair of groups
+```{r}
+pairwise.wilcox.test(summary_dt$period, summary_dt$period_group )
+```
+      
+
+      
